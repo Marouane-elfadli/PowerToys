@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -189,29 +190,54 @@ public sealed partial class MainWindow : WindowEx, IDisposable
     {
         if (!string.IsNullOrEmpty(_launchContext.ShowEventName))
         {
-            try
+            _showEvent = TryOpenRunnerEvent(_launchContext.ShowEventName!, "show");
+            if (_showEvent != null)
             {
-                _showEvent = EventWaitHandle.OpenExisting(_launchContext.ShowEventName!);
                 EnsureListenerInfrastructure();
                 StartShowListenerThread();
-            }
-            catch (WaitHandleCannotBeOpenedException)
-            {
             }
         }
 
         if (!string.IsNullOrEmpty(_launchContext.ExitEventName))
         {
-            try
+            _exitEvent = TryOpenRunnerEvent(_launchContext.ExitEventName!, "exit");
+            if (_exitEvent != null)
             {
-                _exitEvent = EventWaitHandle.OpenExisting(_launchContext.ExitEventName!);
                 EnsureListenerInfrastructure();
                 StartExitListenerThread();
             }
-            catch (WaitHandleCannotBeOpenedException)
+        }
+    }
+
+    /// <summary>
+    /// Opens a named event created by the runner. At Windows startup the runner and this process
+    /// are launched back to back, so the event may not be visible yet on the first attempt.
+    /// Retry briefly and log the failure instead of silently leaving Quick Access without a
+    /// show/exit listener (which makes the flyout permanently unresponsive).
+    /// </summary>
+    private static EventWaitHandle? TryOpenRunnerEvent(string eventName, string purpose)
+    {
+        const int maxAttempts = 10;
+        const int delayMs = 100;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
             {
+                return EventWaitHandle.OpenExisting(eventName);
+            }
+            catch (WaitHandleCannotBeOpenedException) when (attempt < maxAttempts)
+            {
+                Thread.Sleep(delayMs);
+            }
+            catch (Exception ex) when (ex is WaitHandleCannotBeOpenedException or UnauthorizedAccessException or IOException)
+            {
+                Logger.LogError($"QuickAccess: failed to open {purpose} event '{eventName}' after {attempt} attempt(s). The flyout will not respond to the runner.", ex);
+                return null;
             }
         }
+
+        return null;
     }
 
     private void ShowWindow()
